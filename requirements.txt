@@ -1,0 +1,9 @@
+streamlit==1.37.0
+chromadb==0.5.3
+sentence-transformers==3.0.1
+groq
+pandas
+numpy
+matplotlib
+plotly
+python-dotenv
