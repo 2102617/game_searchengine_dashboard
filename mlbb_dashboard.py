@@ -12,6 +12,7 @@ from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
 from nltk.sentiment import SentimentIntensityAnalyzer
 import os
+
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -50,8 +51,9 @@ st.markdown("""
         margin: 1rem 0;
     }
     .review-card {
+        color:black;
         background: white;
-        padding: 1rem;
+        padding: 0.5rem;
         border-radius: 10px;
         border-left: 4px solid #FF6B35;
         margin: 0.5rem 0;
@@ -88,7 +90,7 @@ def analyze_sentiment(text):
     scores = sia.polarity_scores(text)
     return scores['compound']
 
-@st.cache_data
+@st.cache_resource
 def setup_chromadb(df):
     """Setup ChromaDB for semantic search using SentenceTransformer embeddings"""
     try:
@@ -157,6 +159,73 @@ def search_reviews(collection, query, n_results=10):
     except Exception as e:
         st.error(f"Search error: {e}")
         return None
+    
+from groq import Groq
+
+# -------------------------------
+# AI Assistant with RAG
+# -------------------------------
+def ai_assistant(query, collection, top_k=5):
+    """
+    Retrieve relevant reviews from ChromaDB and answer using Groq API.
+    """
+
+    if not query or not collection:
+        return "⚠️ No query or collection available."
+
+    # Step 1: Retrieve context from ChromaDB
+    try:
+        results = collection.query(query_texts=[query], n_results=top_k)
+    except Exception as e:
+        return f"⚠️ Retrieval error: {e}"
+
+    retrieved_docs = results["documents"][0] if results and "documents" in results else []
+    context = "\n".join(retrieved_docs)
+
+    if not context:
+        return "❌ No relevant reviews found."
+
+    # Step 2: Create prompt for Groq
+    system_prompt = """
+    You are an AI assistant specialized in analyzing Mobile Legends Bang Bang (MLBB) user reviews.
+    You ONLY use the provided reviews as your source of truth.
+    - If the reviews contain dates, thumbs up counts, or trends, mention them explicitly.
+    - If the query asks about a time period (e.g., November 2025), summarize reviews from that time.
+    - Do NOT make assumptions or add general knowledge about the game outside the reviews.
+    - If you cannot find enough information in the reviews, say: 
+      "The available reviews do not provide enough information to answer this."
+    """
+    user_prompt = f"""
+    You are an assistant analyzing game reviews. 
+    Answer the user's question based only on the following reviews:
+
+    {context}
+
+    User Question: {query}
+    Answer in a clear and concise way.
+    """
+
+
+    # Step 3: Call Groq API
+    try:
+        client = Groq(api_key=st.secrets["GROQ_API_KEY"])
+
+        response = client.chat.completions.create(
+            model="llama-3.1-8b-instant",   # You can also use "llama-3.1-8b-instant"
+            messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.3,
+            max_tokens=500,
+        )
+
+        answer = response.choices[0].message.content.strip()
+        return answer
+
+    except Exception as e:
+        return f"⚠️ Groq API error: {e}"
+
 
 def create_overview_metrics(df):
     """Create overview metrics cards"""
@@ -295,7 +364,7 @@ def main():
     
     page = st.sidebar.selectbox(
         "Choose a page:",
-        ["📊 Overview", "🔍 Search Reviews", "📈 Analytics", "🎯 Insights", "⚙️ Admin Panel"]
+        ["📊 Overview", "📈 Analytics", "🎯 Insights", "🔍 Search Reviews", "🤖 AI Assistant", "⚙️ Admin Panel"]
     )
     
     if page == "📊 Overview":
@@ -327,7 +396,17 @@ def main():
             labels={'x': 'Frequency', 'y': 'Words'}
         )
         st.plotly_chart(fig, use_container_width=True)
-    
+
+    elif page == "🤖 AI Assistant":
+        st.header("🤖 AI Assistant")
+        query = st.text_input("Ask a question about the reviews:")
+
+        if query:
+            with st.spinner("Thinking..."):
+                answer = ai_assistant(query, collection, top_k=5)
+            st.write("### Answer:")
+            st.write(answer)
+        
     elif page == "🔍 Search Reviews":
         st.header("🔍 Search Reviews")
         
@@ -336,7 +415,7 @@ def main():
             return
         
         # Search interface
-        st.markdown('<div class="search-box">', unsafe_allow_html=True)
+        
         search_query = st.text_input("Enter your search query:", placeholder="e.g., matchmaking, graphics, lag, gameplay...")
         n_results = st.slider("Number of results:", min_value=5, max_value=50, value=10)
         st.markdown('</div>', unsafe_allow_html=True)
@@ -352,7 +431,6 @@ def main():
                     with st.container():
                         st.markdown(f"""
                         <div class="review-card">
-                            <h4>Review #{i+1}</h4>
                             <p><strong>User:</strong> {metadata['userName']}</p>
                             <p><strong>Rating:</strong> {'⭐' * int(metadata['score'])} ({metadata['score']}/5)</p>
                             <p><strong>Thumbs Up:</strong> {metadata['thumbsUpCount']}</p>
